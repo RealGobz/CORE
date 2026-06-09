@@ -24,7 +24,7 @@ WORKDIR /app
 
 # Copy only what's needed for the rules server
 COPY requirements.txt .
-RUN pip install --no-cache-dir fastmcp mcp anyio
+RUN pip install --no-cache-dir -r requirements.txt fastmcp mcp anyio
 
 COPY mcp_servers/rules_server.py ./mcp_servers/rules_server.py
 COPY config.py .

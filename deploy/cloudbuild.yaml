@@ -5,8 +5,6 @@
 # Trigger manually:
 #   gcloud builds submit --config deploy/cloudbuild.yaml .
 #
-# Or connect to GitHub in Cloud Build console for automatic deploys on push.
-#
 # Prerequisites:
 #   - $PROJECT_ID is automatically set by Cloud Build
 #   - Enable APIs: cloudbuild.googleapis.com, run.googleapis.com, containerregistry.googleapis.com
@@ -21,7 +19,7 @@ steps:
       - -f
       - deploy/Dockerfile.rules
       - -t
-      - gcr.io/$PROJECT_ID/rules-server:$COMMIT_SHA
+      - gcr.io/$PROJECT_ID/rules-server:v1
       - -t
       - gcr.io/$PROJECT_ID/rules-server:latest
       - .
@@ -44,7 +42,7 @@ steps:
       - run
       - deploy
       - rules-server
-      - --image=gcr.io/$PROJECT_ID/rules-server:$COMMIT_SHA
+      - --image=gcr.io/$PROJECT_ID/rules-server:v1
       - --region=us-central1
       - --platform=managed
       - --allow-unauthenticated
@@ -60,7 +58,7 @@ steps:
       - -f
       - deploy/Dockerfile.ui
       - -t
-      - gcr.io/$PROJECT_ID/routing-ui:$COMMIT_SHA
+      - gcr.io/$PROJECT_ID/routing-ui:v1
       - -t
       - gcr.io/$PROJECT_ID/routing-ui:latest
       - .
@@ -75,8 +73,6 @@ steps:
       - gcr.io/$PROJECT_ID/routing-ui
 
   # ── Deploy UI to Cloud Run ────────────────────────────────────────────────
-  # NOTE: Set your real values for MONGO_URI and GOOGLE_CLOUD_PROJECT below.
-  # Better: use Secret Manager and reference secrets here instead of plaintext.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     id: "deploy-ui"
     waitFor: ["push-ui", "deploy-rules-server"]
@@ -85,7 +81,7 @@ steps:
       - run
       - deploy
       - routing-ui
-      - --image=gcr.io/$PROJECT_ID/routing-ui:$COMMIT_SHA
+      - --image=gcr.io/$PROJECT_ID/routing-ui:v1
       - --region=us-central1
       - --platform=managed
       - --allow-unauthenticated
@@ -93,12 +89,11 @@ steps:
       - --memory=2Gi
       - --cpu=2
       - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_REGION=us-central1
-      # Add MONGO_URI and ROOT_RULES_SERVER_URL via Cloud Run secrets or env vars in console
 
 images:
-  - gcr.io/$PROJECT_ID/rules-server:$COMMIT_SHA
+  - gcr.io/$PROJECT_ID/rules-server:v1
   - gcr.io/$PROJECT_ID/rules-server:latest
-  - gcr.io/$PROJECT_ID/routing-ui:$COMMIT_SHA
+  - gcr.io/$PROJECT_ID/routing-ui:v1
   - gcr.io/$PROJECT_ID/routing-ui:latest
 
 options:

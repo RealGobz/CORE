@@ -3,10 +3,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GCP_PROJECT   = os.environ["GOOGLE_CLOUD_PROJECT"]
+# Safely get variables so the container survives initial deployment
+GCP_PROJECT   = os.environ.get("GOOGLE_CLOUD_PROJECT", "dummy-project")
 GCP_REGION    = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
 
-MONGO_URI     = os.environ["MONGO_URI"]
+MONGO_URI     = os.environ.get("MONGO_URI", "mongodb://localhost:27017/dummy")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "LogisticsDB")
 
 # SWITCHED TO FLASH FOR 4x FASTER EXECUTION IN THE DEMO
