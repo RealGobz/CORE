@@ -140,7 +140,7 @@ And the MCP `insert-many` tool to **write** the final rerouting manifest or the 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/autonomous-routing
+git clone https://github.com/RealGobz/autonomous-routing
 cd autonomous-routing
 pip install -r requirements.txt
 ```
