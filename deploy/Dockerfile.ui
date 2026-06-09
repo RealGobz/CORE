@@ -1,0 +1,56 @@
+# deploy/Dockerfile.ui
+# ----------------------
+# Container for the Streamlit dashboard.
+# Deployed to Cloud Run as a web-accessible UI.
+#
+# Build:
+#   docker build -f deploy/Dockerfile.ui -t routing-ui .
+#
+# Run locally:
+#   docker run -p 8501:8501 \
+#     -e GOOGLE_CLOUD_PROJECT=your-project \
+#     -e MONGO_URI=your-uri \
+#     -e ROOT_RULES_SERVER_URL=https://your-rules-server.run.app \
+#     routing-ui
+#
+# Cloud Run deploy:
+#   gcloud run deploy routing-ui \
+#     --image gcr.io/YOUR_PROJECT/routing-ui \
+#     --region us-central1 \
+#     --platform managed \
+#     --allow-unauthenticated \
+#     --set-env-vars GOOGLE_CLOUD_PROJECT=...,MONGO_URI=...,ROOT_RULES_SERVER_URL=...
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY config.py .
+COPY runner.py .
+COPY agents/ ./agents/
+COPY toolsets/ ./toolsets/
+COPY mcp_servers/ ./mcp_servers/
+COPY ui/ ./ui/
+
+# Streamlit config — disable the default welcome page, set port
+RUN mkdir -p ~/.streamlit && echo "\
+[server]\n\
+port = 8080\n\
+headless = true\n\
+enableCORS = false\n\
+enableXsrfProtection = false\n\
+" > ~/.streamlit/config.toml
+
+EXPOSE 8080
+
+CMD ["streamlit", "run", "ui/dashboard.py", "--server.port=8080", "--server.address=0.0.0.0"]

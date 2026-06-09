@@ -1,0 +1,39 @@
+# deploy/Dockerfile.rules
+# -------------------------
+# Container for the custom Rules MCP server.
+# Deployed to Cloud Run as a standalone service.
+# The Root Agent connects to it via SSE transport when ROOT_RULES_SERVER_URL is set.
+#
+# Build:
+#   docker build -f deploy/Dockerfile.rules -t rules-server .
+#
+# Run locally:
+#   docker run -p 8080:8080 rules-server
+#
+# Cloud Run deploy (via gcloud):
+#   gcloud run deploy rules-server \
+#     --image gcr.io/YOUR_PROJECT/rules-server \
+#     --region us-central1 \
+#     --platform managed \
+#     --allow-unauthenticated
+
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy only what's needed for the rules server
+COPY requirements.txt .
+RUN pip install --no-cache-dir fastmcp mcp anyio
+
+COPY mcp_servers/rules_server.py ./mcp_servers/rules_server.py
+COPY config.py .
+
+# FastMCP can run in SSE mode for Cloud Run (HTTP-based MCP transport)
+# Set this env var to switch from stdio to SSE
+ENV FASTMCP_TRANSPORT=sse
+ENV PORT=8080
+
+EXPOSE 8080
+
+CMD ["python", "mcp_servers/rules_server.py"]

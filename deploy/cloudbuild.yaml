@@ -1,0 +1,105 @@
+# deploy/cloudbuild.yaml
+# -----------------------
+# Google Cloud Build pipeline — builds and pushes both containers.
+#
+# Trigger manually:
+#   gcloud builds submit --config deploy/cloudbuild.yaml .
+#
+# Or connect to GitHub in Cloud Build console for automatic deploys on push.
+#
+# Prerequisites:
+#   - $PROJECT_ID is automatically set by Cloud Build
+#   - Enable APIs: cloudbuild.googleapis.com, run.googleapis.com, containerregistry.googleapis.com
+
+steps:
+
+  # ── Build Rules MCP Server ────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-rules-server"
+    args:
+      - build
+      - -f
+      - deploy/Dockerfile.rules
+      - -t
+      - gcr.io/$PROJECT_ID/rules-server:$COMMIT_SHA
+      - -t
+      - gcr.io/$PROJECT_ID/rules-server:latest
+      - .
+
+  # ── Push Rules Server ─────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-rules-server"
+    waitFor: ["build-rules-server"]
+    args:
+      - push
+      - --all-tags
+      - gcr.io/$PROJECT_ID/rules-server
+
+  # ── Deploy Rules Server to Cloud Run ─────────────────────────────────────
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-rules-server"
+    waitFor: ["push-rules-server"]
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - rules-server
+      - --image=gcr.io/$PROJECT_ID/rules-server:$COMMIT_SHA
+      - --region=us-central1
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=8080
+      - --memory=512Mi
+      - --cpu=1
+
+  # ── Build Streamlit UI ────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-ui"
+    args:
+      - build
+      - -f
+      - deploy/Dockerfile.ui
+      - -t
+      - gcr.io/$PROJECT_ID/routing-ui:$COMMIT_SHA
+      - -t
+      - gcr.io/$PROJECT_ID/routing-ui:latest
+      - .
+
+  # ── Push UI ───────────────────────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-ui"
+    waitFor: ["build-ui"]
+    args:
+      - push
+      - --all-tags
+      - gcr.io/$PROJECT_ID/routing-ui
+
+  # ── Deploy UI to Cloud Run ────────────────────────────────────────────────
+  # NOTE: Set your real values for MONGO_URI and GOOGLE_CLOUD_PROJECT below.
+  # Better: use Secret Manager and reference secrets here instead of plaintext.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-ui"
+    waitFor: ["push-ui", "deploy-rules-server"]
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - routing-ui
+      - --image=gcr.io/$PROJECT_ID/routing-ui:$COMMIT_SHA
+      - --region=us-central1
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=8080
+      - --memory=2Gi
+      - --cpu=2
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_REGION=us-central1
+      # Add MONGO_URI and ROOT_RULES_SERVER_URL via Cloud Run secrets or env vars in console
+
+images:
+  - gcr.io/$PROJECT_ID/rules-server:$COMMIT_SHA
+  - gcr.io/$PROJECT_ID/rules-server:latest
+  - gcr.io/$PROJECT_ID/routing-ui:$COMMIT_SHA
+  - gcr.io/$PROJECT_ID/routing-ui:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

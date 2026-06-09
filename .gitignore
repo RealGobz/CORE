@@ -1,0 +1,37 @@
+# Credentials — NEVER commit these
+.env
+*.json
+service-account*.json
+gcloud-*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# Logs — run artifacts, never commit
+logs/
+*.log
+*.jsonl
