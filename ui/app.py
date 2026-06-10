@@ -38,17 +38,6 @@ def sanitize_history(events: list) -> list:
     """
     Remove any trailing turns that would cause Gemini's
     'function_call count != function_response count' error.
-
-    Gemini requires that every function_call part in a model turn is
-    answered by an exactly matching function_response part in the very
-    next user turn.  When a session is interrupted mid-tool the stored
-    history can violate this, crashing the next run_async call.
-
-    Strategy: walk the event list and drop any suffix where:
-      • a model turn contains function_call parts with no following
-        user turn that contains the same number of function_response parts.
-    We also drop any lone function_response user turn that has no
-    preceding model function_call turn.
     """
     if not events:
         return events
@@ -66,33 +55,25 @@ def sanitize_history(events: list) -> list:
         parts = getattr(content, "parts", []) or []
         role  = getattr(content, "role", "")
 
-        # Count function_calls in this event
         fc_count = sum(1 for p in parts if getattr(p, "function_call", None))
         fr_count = sum(1 for p in parts if getattr(p, "function_response", None))
 
         if role == "model" and fc_count > 0:
-            # This turn made tool calls — the NEXT turn must have exactly
-            # fc_count function_response parts.
             if i + 1 < len(events):
                 next_event  = events[i + 1]
                 next_parts  = getattr(getattr(next_event, "content", None), "parts", []) or []
                 next_fr_cnt = sum(1 for p in next_parts if getattr(p, "function_response", None))
                 if next_fr_cnt == fc_count:
-                    # Pair is intact — keep both
                     safe.append(event)
                     safe.append(next_event)
                     i += 2
                     continue
                 else:
-                    # Mismatch — drop this turn and everything after
                     break
             else:
-                # Tool call at end of history with no response — drop it
                 break
 
         elif role == "user" and fr_count > 0 and fc_count == 0:
-            # Pure function-response turn with no preceding model call
-            # (can happen if the model turn was already dropped) — skip
             i += 1
             continue
 
@@ -105,7 +86,6 @@ def sanitize_history(events: list) -> list:
 # ─── Streamlit Page Config ────────────────────────────────────────────────────
 st.set_page_config(page_title="CORE", page_icon="🚢", layout="wide")
 
-# Custom CSS for overall polish
 st.markdown("""
     <style>
     .block-container { padding-top: 2rem; padding-bottom: 2rem; }
@@ -159,6 +139,7 @@ def refresh_subsession_chat_history():
         doc = db.sessions.find_one({"_id": st.session_state.selected_subsession})
         
         reconstructed = []
+        tool_trace = []
         if doc and doc.get("adk_chat_history"):
             for event in doc["adk_chat_history"]:
                 role = event.get("role")
@@ -166,8 +147,16 @@ def refresh_subsession_chat_history():
                 text_content = ""
                 for part in event.get("parts", []):
                     if "text" in part: text_content += part["text"].strip() + "\n"
+                    
+                    # Extract tool calls and responses for the trace panel
+                    if "function_call" in part:
+                        tool_trace.append({"type": "call", "name": part["function_call"]["name"], "args": part["function_call"]["args"]})
+                    if "function_response" in part:
+                        tool_trace.append({"type": "response", "name": part["function_response"]["name"], "response": part["function_response"]["response"]})
+                        
                 if text_content.strip(): reconstructed.append({"role": ui_role, "content": text_content.strip()})
         st.session_state.subsession_ui_history = reconstructed
+        st.session_state.subsession_tool_trace = tool_trace
     except Exception as e: pass
 
 # ─── Data Fetching Helpers ────────────────────────────────────────────────────
@@ -205,14 +194,6 @@ def fetch_manifest_data(subsession_id):
 # ─── Session Management Logic ─────────────────────────────────────────────────
 
 def _text_only_history(raw_history: list) -> list:
-    """
-    Keep only pure-text turns from a stored adk_chat_history.
-    Tool call / response turns are agent-internal scaffolding from the
-    original autonomous run. Replaying them into a new chat session
-    causes Gemini 400 INVALID_ARGUMENT because the new session has no
-    matching tool state. We give the agent context via text turns only
-    (the trigger message + final summary) so follow-up questions work.
-    """
     text_only = []
     for event in raw_history:
         parts = event.get("parts", [])
@@ -233,7 +214,6 @@ def setup_subsession(subsession_id):
             db = client[MONGO_DB_NAME]
             sub_doc = db.sessions.find_one({"_id": subsession_id})
             if sub_doc and sub_doc.get("adk_chat_history"):
-                # Strip tool call/response turns — only inject text context
                 clean_raw = _text_only_history(sub_doc["adk_chat_history"])
                 history_events = _deserialize_history(clean_raw)
                 sess_obj = await st.session_state.root_session_service.get_session(app_name="autonomous-routing", user_id="system", session_id=subsession_id)
@@ -437,72 +417,109 @@ with chat_col:
             </div>
             """, unsafe_allow_html=True)
             
-            log_data = fetch_manifest_data(st.session_state.selected_subsession)
-            if log_data:
-                res = log_data.get("result", {})
-                with st.expander("📄 View Final Routing Manifest", expanded=False):
-                    if res.get("status") == "RESOLVED":
-                        st.success(f"**Vessel:** {log_data.get('vessel_name')} | **Status:** RESOLVED | **Approved Route:** {res.get('approved_port')}")
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Distance", f"{res.get('distance_km')} km")
-                        m2.metric("Total Cost", f"${res.get('total_cost_usd'):,}")
-                        m3.metric("Fuel Cost", f"${res.get('fuel_cost_usd'):,}")
-                        st.markdown("**✅ Approved Port Compliance:**")
-                        st.info(res.get("compliance_approval", {}).get("reasoning", ""))
-                        st.markdown("**🧠 Agent Reasoning Summary:**")
-                        st.write(log_data.get("agent_reasoning_summary", ""))
-                    elif res.get("status") == "ESCALATED":
-                        st.error(f"**Vessel:** {log_data.get('vessel_name')} | **Status:** ESCALATED")
-                        st.warning(f"**Escalation Reason:** {res.get('escalation_reason')}")
-                        st.markdown("**🧠 Agent Reasoning Summary:**")
-                        st.write(log_data.get("agent_reasoning_summary", ""))
+            agent_col, trace_col = st.columns([1.5, 1], gap="medium")
             
-            st.divider()
-            st.caption("Chat directly with the Root Agent managing this specific vessel:")
-            
-            root_chat_container = st.container(height=350, border=False)
-            with root_chat_container:
-                for msg in st.session_state.get("subsession_ui_history", []):
-                    with st.chat_message(msg["role"]):
-                        st.markdown(msg["content"])
-            
-            if root_prompt := st.chat_input("Question the Root Agent...", key="root_prompt"):
-                st.session_state.subsession_ui_history.append({"role": "user", "content": root_prompt})
+            with agent_col:
+                log_data = fetch_manifest_data(st.session_state.selected_subsession)
+                if log_data:
+                    res = log_data.get("result", {})
+                    with st.expander("📄 View Final Routing Manifest", expanded=False):
+                        if res.get("status") == "RESOLVED":
+                            st.success(f"**Vessel:** {log_data.get('vessel_name')} | **Status:** RESOLVED | **Approved Route:** {res.get('approved_port')}")
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("Distance", f"{res.get('distance_km')} km")
+                            m2.metric("Total Cost", f"${res.get('total_cost_usd'):,}")
+                            m3.metric("Fuel Cost", f"${res.get('fuel_cost_usd'):,}")
+                            st.markdown("**✅ Approved Port Compliance:**")
+                            st.info(res.get("compliance_approval", {}).get("reasoning", ""))
+                            st.markdown("**🧠 Agent Reasoning Summary:**")
+                            st.write(log_data.get("agent_reasoning_summary", ""))
+                        elif res.get("status") == "ESCALATED":
+                            st.error(f"**Vessel:** {log_data.get('vessel_name')} | **Status:** ESCALATED")
+                            st.warning(f"**Escalation Reason:** {res.get('escalation_reason')}")
+                            st.markdown("**🧠 Agent Reasoning Summary:**")
+                            st.write(log_data.get("agent_reasoning_summary", ""))
+                
+                st.divider()
+                st.caption("Chat directly with the Root Agent managing this specific vessel:")
+                
+                root_chat_container = st.container(height=350, border=False)
                 with root_chat_container:
-                    with st.chat_message("user"): st.markdown(root_prompt)
-                    with st.chat_message("assistant"):
-                        status_container = st.container()
-                        output_placeholder = st.empty()
-                        async def process_root_turn():
-                            final_text = ""
-                            with status_container:
-                                status = st.status("Root Agent Processing...", expanded=True)
-                            async for event in st.session_state.root_runner.run_async(
-                                user_id="system", session_id=st.session_state.selected_subsession,
-                                new_message=genai_types.Content(role="user", parts=[genai_types.Part(text=root_prompt)])
-                            ):
-                                ev = _serialize_event(event)
-                                etype = ev.get("type")
-                                if etype == "tool_call": status.write(f"🛠 **Accessing Knowledge:** `{ev.get('tool_name', '?')}`")
-                                elif etype == "tool_result": status.write(f"✅ **Knowledge retrieved:** `{ev.get('tool_name', '?')}`")
-                                elif etype in ["model_text", "final_response"]:
-                                    text = ev.get("text", "")
-                                    if text and text.strip() not in final_text:
-                                        final_text += text + " "
-                                        output_placeholder.markdown(final_text + "▌")
-                            status.update(label="Response Formulated", state="complete", expanded=False)
-                            output_placeholder.empty()
+                    for msg in st.session_state.get("subsession_ui_history", []):
+                        with st.chat_message(msg["role"]):
+                            st.markdown(msg["content"])
+                
+                if root_prompt := st.chat_input("Question the Root Agent...", key="root_prompt"):
+                    st.session_state.subsession_ui_history.append({"role": "user", "content": root_prompt})
+                    with root_chat_container:
+                        with st.chat_message("user"): st.markdown(root_prompt)
+                        with st.chat_message("assistant"):
+                            status_container = st.container()
+                            output_placeholder = st.empty()
+                            async def process_root_turn():
+                                final_text = ""
+                                with status_container:
+                                    status = st.status("Root Agent Processing...", expanded=True)
+                                async for event in st.session_state.root_runner.run_async(
+                                    user_id="system", session_id=st.session_state.selected_subsession,
+                                    new_message=genai_types.Content(role="user", parts=[genai_types.Part(text=root_prompt)])
+                                ):
+                                    ev = _serialize_event(event)
+                                    etype = ev.get("type")
+                                    if etype == "tool_call":
+                                        tool_name = ev.get('tool_name', '?')
+                                        args = ev.get('args', {})
+                                        status.write(f"🛠 **Calling Tool:** `{tool_name}`")
+                                        status.json(args)
+                                    elif etype == "tool_result": 
+                                        status.write(f"✅ **Tool Finished:** `{ev.get('tool_name', '?')}`")
+                                    elif etype in ["model_text", "final_response"]:
+                                        text = ev.get("text", "")
+                                        if text and text.strip() not in final_text:
+                                            final_text += text + " "
+                                            output_placeholder.markdown(final_text + "▌")
+                                status.update(label="Response Formulated", state="complete", expanded=False)
+                                output_placeholder.empty()
 
-                            root_sess_obj = await st.session_state.root_session_service.get_session(app_name="autonomous-routing", user_id="system", session_id=st.session_state.selected_subsession)
-                            if root_sess_obj:
-                                subs = fetch_subsessions(st.session_state.main_session_id)
-                                v_id = next((s["vessel_id"] for s in subs if s["subsession_id"] == st.session_state.selected_subsession), "unknown")
-                                save_session_to_mongo(st.session_state.selected_subsession, v_id, root_sess_obj)
-                                return extract_last_model_text(root_sess_obj)
-                            return final_text
-                        asyncio.run(process_root_turn())
-                refresh_subsession_chat_history()
-                st.rerun()
+                                root_sess_obj = await st.session_state.root_session_service.get_session(app_name="autonomous-routing", user_id="system", session_id=st.session_state.selected_subsession)
+                                if root_sess_obj:
+                                    subs = fetch_subsessions(st.session_state.main_session_id)
+                                    v_id = next((s["vessel_id"] for s in subs if s["subsession_id"] == st.session_state.selected_subsession), "unknown")
+                                    save_session_to_mongo(st.session_state.selected_subsession, v_id, root_sess_obj)
+                                    return extract_last_model_text(root_sess_obj)
+                                return final_text
+                            asyncio.run(process_root_turn())
+                    refresh_subsession_chat_history()
+                    st.rerun()
+
+            with trace_col:
+                st.markdown("""
+                    <div style="background-color: #0f172a; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
+                        <h4 style="margin:0; color: #38bdf8;">🛠️ Execution Trace</h4>
+                        <p style="margin:0; font-size: 0.8rem; color: #94a3b8;">Live MCP Tool Calls</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                with st.container(height=520, border=True):
+                    tool_trace = st.session_state.get("subsession_tool_trace", [])
+                    if not tool_trace:
+                        st.info("No tool calls recorded yet.")
+                    else:
+                        for trace in tool_trace:
+                            if trace["type"] == "call":
+                                st.markdown(f"**⚡ Request:** `{trace['name']}`")
+                                with st.expander("View Arguments", expanded=False):
+                                    st.json(trace["args"])
+                            elif trace["type"] == "response":
+                                st.markdown(f"**✅ Return:** `{trace['name']}`")
+                                with st.expander("View Response", expanded=False):
+                                    # Limit massive responses to avoid freezing the UI
+                                    resp_str = str(trace["response"])
+                                    if len(resp_str) > 2000:
+                                        st.json({"note": "Response truncated for UI performance", "data": resp_str[:2000] + "..."})
+                                    else:
+                                        st.json(trace["response"])
+                            st.divider()
 
 # ─── Right Panel: Subsessions (ORANGE THEME) ──────────────────────────────────
 with panel_col:
