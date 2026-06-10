@@ -39,6 +39,7 @@ COPY config.py .
 COPY runner.py .
 COPY agents/ ./agents/
 COPY toolsets/ ./toolsets/
+COPY session_service.py .
 COPY mcp_servers/ ./mcp_servers/
 COPY ui/ ./ui/
 
